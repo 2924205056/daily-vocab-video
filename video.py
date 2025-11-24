@@ -1,26 +1,23 @@
 import streamlit as st
-import asyncio
-import edge_tts
+from gtts import gTTS  # 导入谷歌语音库
 from moviepy.editor import *
 import tempfile
 import os
-import platform
 
 # ================= 配置区域 =================
 DEFAULT_FONT = "font.ttf" 
 
-# 微软语音配置 (云端运行时用)
-VOICE_EN = "en-US-ChristopherNeural"
-VOICE_ZH = "zh-CN-XiaoxiaoNeural"
-
 # ================= 页面设置 =================
 st.set_page_config(page_title="单词视频生成器", layout="wide")
-st.title("🎬 每日单词视频生成器 (Mac本地 + 云端双模版)")
+st.title("🎬 每日单词视频生成器 (Google稳定版)")
+st.markdown("专为 Streamlit Cloud 优化，使用 Google 语音引擎，100% 可用。")
 
 # ================== 侧边栏 ==================
 st.sidebar.header("⚙️ 素材配置")
+
+# 检查字体
 if not os.path.exists(DEFAULT_FONT):
-    st.sidebar.error(f"⚠️ 警告：未找到 {DEFAULT_FONT}！")
+    st.sidebar.error(f"⚠️ 未找到 {DEFAULT_FONT}！请在 GitHub 上传字体文件。")
     current_font = "Arial" 
 else:
     st.sidebar.success(f"✅ 已加载字体: {DEFAULT_FONT}")
@@ -39,59 +36,40 @@ with col2:
     sentence = st.text_area("英文例句", value="Her ambition was to become a pilot.")
     translation = st.text_input("例句翻译", value="她的抱负是成为一名飞行员。")
 
-# ================== 核心语音函数 (关键修改) ==================
+# ================== Google 语音生成函数 ==================
 
-def use_mac_tts(text, lang, filename):
+def generate_google_tts(text, lang, output_file):
     """
-    使用 Mac 自带的 'say' 命令生成语音，不需要联网
-    """
-    # 英文用 Samantha (Siri声线), 中文用 Ting-Ting
-    voice = "Samantha" if lang == "en" else "Ting-Ting"
-    
-    # Mac 的 say 命令生成的是 aiff 格式，ffmpeg (moviepy) 可以直接读取
-    # 这里的 -o filename 是输出路径
-    cmd = f'say -v {voice} -o "{filename}" "{text}"'
-    print(f"正在使用 Mac 本地语音: {cmd}")
-    os.system(cmd)
-
-async def generate_tts_smart(text, voice, output_file, lang_code="en"):
-    """
-    智能语音生成：优先尝试微软 Edge-TTS，失败则切换 Mac 本地
+    使用 Google TTS 生成语音
+    lang: 'en' (英语) or 'zh-CN' (中文)
     """
     if not text: return
-
-    # 1. 尝试微软 Edge-TTS (网络好时音质最好)
+    print(f"正在生成谷歌语音: {text}")
     try:
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_file)
+        # Google TTS 不需要 async，直接调用
+        tts = gTTS(text=text, lang=lang)
+        tts.save(output_file)
     except Exception as e:
-        print(f"微软语音连接失败 ({e})，切换 Mac 本地语音...")
-        
-        # 2. 如果失败，检查是不是在 Mac 上，是的话用本地语音
-        if platform.system() == 'Darwin':
-            # 删除可能存在的空文件
-            if os.path.exists(output_file): os.remove(output_file)
-            # 调用 Mac 系统语音
-            use_mac_tts(text, lang_code, output_file)
-        else:
-            st.error("❌ 语音生成失败：网络不通且非 Mac 系统。请部署到云端使用。")
-            raise e
+        raise Exception(f"Google语音生成失败: {e}")
 
 def process_video(bg_path, font_path, tick_path, data):
     temp_dir = tempfile.mkdtemp()
-    audio_word_path = os.path.join(temp_dir, "word.aiff") # Mac say 默认格式兼容性更好
-    audio_full_path = os.path.join(temp_dir, "full.aiff")
+    audio_word_path = os.path.join(temp_dir, "word.mp3")
+    audio_full_path = os.path.join(temp_dir, "full.mp3")
     output_video_path = os.path.join(temp_dir, "output.mp4")
 
-    # 1. 生成语音 (智能模式)
+    # 1. 生成语音 (换成了 Google)
     try:
         # 单词 (英文)
-        asyncio.run(generate_tts_smart(data['word'], VOICE_EN, audio_word_path, "en"))
+        generate_google_tts(data['word'], 'en', audio_word_path)
         
         # 句子 (中文+英文)
-        full_text = f"{data['word']}... {data['meaning']}... {data['sentence']}"
-        asyncio.run(generate_tts_smart(full_text, VOICE_ZH, audio_full_path, "zh"))
-    except:
+        # 技巧：gTTS 对混合语言支持一般，我们让它用中文引擎读，它能读出英文单词
+        full_text = f"{data['word']}，{data['meaning']}，{data['sentence']}"
+        generate_google_tts(full_text, 'zh-CN', audio_full_path)
+        
+    except Exception as e:
+        st.error(f"❌ 语音生成失败: {e}")
         return None
 
     # 2. 载入素材
@@ -100,12 +78,11 @@ def process_video(bg_path, font_path, tick_path, data):
     else:
         bg_clip = ColorClip(size=(1080, 1920), color=(0,0,0))
 
-    # 读取音频 (MoviePy 会自动处理 aiff/mp3)
     try:
         audio_word_clip = AudioFileClip(audio_word_path)
         audio_full_clip = AudioFileClip(audio_full_path)
-    except OSError:
-        st.error("❌ 音频文件生成失败，可能是 Mac 没有安装中文语音包 (系统偏好设置->辅助功能->朗读内容->系统声音 选婷婷)")
+    except Exception as e:
+        st.error(f"❌ 音频文件读取失败: {e}")
         return None
     
     tick_sfx = None
@@ -154,8 +131,8 @@ def process_video(bg_path, font_path, tick_path, data):
     return output_video_path
 
 # ================== 执行 ==================
-if st.button("🚀 生成视频 (Mac兼容版)", type="primary"):
-    with st.spinner("正在合成... (如联网失败会自动切换Mac语音)"):
+if st.button("🚀 生成视频 (Google版)", type="primary"):
+    with st.spinner("正在连接 Google 合成语音..."):
         try:
             t_bg = None
             if bg_file:
@@ -174,7 +151,9 @@ if st.button("🚀 生成视频 (Mac兼容版)", type="primary"):
             video_path = process_video(t_bg, current_font, t_tick, data)
             
             if video_path:
-                st.success("✅ 完成！")
+                st.success("✅ 视频制作完成！")
                 st.video(video_path)
+                with open(video_path, "rb") as file:
+                    st.download_button("⬇️ 下载视频", data=file, file_name=f"{word}_video.mp4", mime="video/mp4")
         except Exception as e:
-            st
+            st.error(f"出错: {e}")
