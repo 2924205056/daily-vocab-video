@@ -1,6 +1,8 @@
 import streamlit as st
-from gtts import gTTS  # 导入谷歌语音库
+from gtts import gTTS
 from moviepy.editor import *
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 import tempfile
 import os
 
@@ -9,16 +11,15 @@ DEFAULT_FONT = "font.ttf"
 
 # ================= 页面设置 =================
 st.set_page_config(page_title="单词视频生成器", layout="wide")
-st.title("🎬 每日单词视频生成器 (Google稳定版)")
-st.markdown("专为 Streamlit Cloud 优化，使用 Google 语音引擎，100% 可用。")
+st.title("🎬 每日单词视频生成器 (Pillow绘图版)")
+st.markdown("✅ 已移除 ImageMagick 依赖，使用 Pillow 原生绘图，解决 Security Policy 报错。")
 
 # ================== 侧边栏 ==================
 st.sidebar.header("⚙️ 素材配置")
 
-# 检查字体
 if not os.path.exists(DEFAULT_FONT):
-    st.sidebar.error(f"⚠️ 未找到 {DEFAULT_FONT}！请在 GitHub 上传字体文件。")
-    current_font = "Arial" 
+    st.sidebar.error(f"⚠️ 未找到 {DEFAULT_FONT}！请上传字体文件。")
+    current_font = None # Pillow 需要确切路径，没有则报错
 else:
     st.sidebar.success(f"✅ 已加载字体: {DEFAULT_FONT}")
     current_font = DEFAULT_FONT
@@ -36,21 +37,71 @@ with col2:
     sentence = st.text_area("英文例句", value="Her ambition was to become a pilot.")
     translation = st.text_input("例句翻译", value="她的抱负是成为一名飞行员。")
 
-# ================== Google 语音生成函数 ==================
+# ================== 核心功能函数 ==================
 
 def generate_google_tts(text, lang, output_file):
-    """
-    使用 Google TTS 生成语音
-    lang: 'en' (英语) or 'zh-CN' (中文)
-    """
     if not text: return
-    print(f"正在生成谷歌语音: {text}")
     try:
-        # Google TTS 不需要 async，直接调用
         tts = gTTS(text=text, lang=lang)
         tts.save(output_file)
     except Exception as e:
         raise Exception(f"Google语音生成失败: {e}")
+
+# 🔥【核心修改】用 Pillow 替代 MoviePy 生成文字图片
+def create_text_clip_pil(text, font_path, font_size, color, duration, width=1080, height=None, position="center"):
+    """
+    使用 Pillow 手动绘制文字，然后转为 MoviePy 的 ImageClip
+    """
+    # 1. 创建透明画布
+    # 如果 height 为 None，说明是局部文字，我们先估算一个高度
+    canvas_w = width
+    canvas_h = 1920 if height is None else height 
+    
+    img = Image.new('RGBA', (canvas_w, canvas_h), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # 2. 加载字体
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        # 如果加载失败，使用默认字体（虽然丑但不会崩）
+        font = ImageFont.load_default()
+    
+    # 3. 计算文字位置使其居中
+    # 使用 textbbox 获取文字宽高
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    
+    if position == "center":
+        x = (canvas_w - text_w) / 2
+        y = (canvas_h - text_h) / 2
+    else:
+        # 这里简化处理，如果是指定位置，我们还是先画在画布中心，
+        # 然后靠 MoviePy 的 set_position 去定位 Clip
+        x = (canvas_w - text_w) / 2
+        y = (canvas_h - text_h) / 2
+
+    # 4. 绘制文字
+    # 将颜色名称转换为 RGB，简单处理几种颜色
+    color_map = {'white': (255, 255, 255), 'yellow': (255, 215, 0), 'lightgrey': (211, 211, 211)}
+    rgb = color_map.get(color, (255, 255, 255))
+    
+    draw.text((x, y), text, font=font, fill=rgb)
+    
+    # 5. 转为 MoviePy ImageClip
+    # 保存为临时文件再读取是兼容性最好的方法
+    temp_img_path = tempfile.mktemp(suffix=".png")
+    img.save(temp_img_path)
+    
+    clip = ImageClip(temp_img_path).set_duration(duration)
+    
+    # 如果是全屏画布模式，就不需要再设置位置了；如果是小组件模式，可能需要
+    if height is not None:
+        # 如果指定了画布高度（比如全屏），通常意味着文字已经画在图上了
+        return clip
+    else:
+        return clip
 
 def process_video(bg_path, font_path, tick_path, data):
     temp_dir = tempfile.mkdtemp()
@@ -58,23 +109,22 @@ def process_video(bg_path, font_path, tick_path, data):
     audio_full_path = os.path.join(temp_dir, "full.mp3")
     output_video_path = os.path.join(temp_dir, "output.mp4")
 
-    # 1. 生成语音 (换成了 Google)
+    # 1. 生成语音
     try:
-        # 单词 (英文)
         generate_google_tts(data['word'], 'en', audio_word_path)
-        
-        # 句子 (中文+英文)
-        # 技巧：gTTS 对混合语言支持一般，我们让它用中文引擎读，它能读出英文单词
         full_text = f"{data['word']}，{data['meaning']}，{data['sentence']}"
         generate_google_tts(full_text, 'zh-CN', audio_full_path)
-        
     except Exception as e:
         st.error(f"❌ 语音生成失败: {e}")
         return None
 
     # 2. 载入素材
     if bg_path:
-        bg_clip = ImageClip(bg_path).resize((1080, 1920))
+        # 注意：这里如果报错，可能是 ImageMagick resize 问题
+        # 我们改用 PIL resize 避免 ImageMagick
+        pil_bg = Image.open(bg_path).resize((1080, 1920))
+        pil_bg.save(os.path.join(temp_dir, "resized_bg.jpg"))
+        bg_clip = ImageClip(os.path.join(temp_dir, "resized_bg.jpg"))
     else:
         bg_clip = ColorClip(size=(1080, 1920), color=(0,0,0))
 
@@ -82,7 +132,7 @@ def process_video(bg_path, font_path, tick_path, data):
         audio_word_clip = AudioFileClip(audio_word_path)
         audio_full_clip = AudioFileClip(audio_full_path)
     except Exception as e:
-        st.error(f"❌ 音频文件读取失败: {e}")
+        st.error(f"❌ 音频读取失败: {e}")
         return None
     
     tick_sfx = None
@@ -95,8 +145,11 @@ def process_video(bg_path, font_path, tick_path, data):
     # --- 阶段 1 ---
     phase1_duration = max(3.5, audio_word_clip.duration + 2.5)
     
-    txt_word_huge = TextClip(data['word'], fontsize=150, color='white', font=font_path, method='label')
-    txt_word_huge = txt_word_huge.set_position('center').set_duration(phase1_duration)
+    # 🔥 使用新的 PIL 绘图函数代替 TextClip
+    # 画布高度设为 1920 代表全屏透明图层，文字居中
+    txt_word_huge = create_text_clip_pil(
+        data['word'], font_path, 150, 'white', phase1_duration, height=1920, position="center"
+    )
     
     audio_track_1 = audio_word_clip
     if tick_sfx:
@@ -108,15 +161,21 @@ def process_video(bg_path, font_path, tick_path, data):
     # --- 阶段 2 ---
     phase2_duration = audio_full_clip.duration + 1.0
     
-    txt_word_top = TextClip(data['word'] + "\n" + data['ipa'], fontsize=100, color='yellow', font=font_path, method='label')
-    txt_word_top = txt_word_top.set_position(('center', 400)).set_duration(phase2_duration)
+    # 单词+音标 (为了布局方便，我们生成透明图片，然后用 set_position 放置)
+    # 这里我们创建小一点的图片，然后让 MoviePy 摆放位置
+    txt_word_top = create_text_clip_pil(
+        data['word'] + "\n" + data['ipa'], font_path, 100, 'yellow', phase2_duration, height=600
+    ).set_position(('center', 200)) # 垂直位置200
     
-    txt_meaning = TextClip(data['meaning'], fontsize=70, color='white', font=font_path, method='caption', size=(900, None))
-    txt_meaning = txt_meaning.set_position(('center', 'center')).set_duration(phase2_duration)
+    txt_meaning = create_text_clip_pil(
+        data['meaning'], font_path, 70, 'white', phase2_duration, height=400
+    ).set_position('center')
     
     ex_text = f"{data['sentence']}\n{data['translation']}"
-    txt_example = TextClip(ex_text, fontsize=50, color='lightgrey', font=font_path, method='caption', size=(900, None))
-    txt_example = txt_example.set_position(('center', 1300)).set_duration(phase2_duration)
+    # 稍微处理下换行，Pillow 不会自动换行，这里简单硬切，以后可以优化
+    txt_example = create_text_clip_pil(
+        ex_text, font_path, 50, 'lightgrey', phase2_duration, height=600
+    ).set_position(('center', 1300)) # 垂直位置1300
 
     clip_phase_2 = CompositeVideoClip([
         bg_clip.set_duration(phase2_duration),
@@ -131,29 +190,32 @@ def process_video(bg_path, font_path, tick_path, data):
     return output_video_path
 
 # ================== 执行 ==================
-if st.button("🚀 生成视频 (Google版)", type="primary"):
-    with st.spinner("正在连接 Google 合成语音..."):
-        try:
-            t_bg = None
-            if bg_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-                    f.write(bg_file.read())
-                    t_bg = f.name
-            
-            t_tick = None
-            if tick_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                    f.write(tick_file.read())
-                    t_tick = f.name
+if st.button("🚀 生成视频 (Pillow版)", type="primary"):
+    if not current_font:
+        st.error("❌ 无法生成：缺少字体文件。请确保 GitHub 仓库中有 font.ttf")
+    else:
+        with st.spinner("正在合成 (Pillow绘图模式)..."):
+            try:
+                t_bg = None
+                if bg_file:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+                        f.write(bg_file.read())
+                        t_bg = f.name
+                
+                t_tick = None
+                if tick_file:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                        f.write(tick_file.read())
+                        t_tick = f.name
 
-            data = {"word": word, "ipa": ipa, "meaning": meaning, "sentence": sentence, "translation": translation}
-            
-            video_path = process_video(t_bg, current_font, t_tick, data)
-            
-            if video_path:
-                st.success("✅ 视频制作完成！")
-                st.video(video_path)
-                with open(video_path, "rb") as file:
-                    st.download_button("⬇️ 下载视频", data=file, file_name=f"{word}_video.mp4", mime="video/mp4")
-        except Exception as e:
-            st.error(f"出错: {e}")
+                data = {"word": word, "ipa": ipa, "meaning": meaning, "sentence": sentence, "translation": translation}
+                
+                video_path = process_video(t_bg, current_font, t_tick, data)
+                
+                if video_path:
+                    st.success("✅ 成功！已绕过 ImageMagick 限制。")
+                    st.video(video_path)
+                    with open(video_path, "rb") as file:
+                        st.download_button("⬇️ 下载视频", data=file, file_name=f"{word}_video.mp4", mime="video/mp4")
+            except Exception as e:
+                st.error(f"出错: {e}")
