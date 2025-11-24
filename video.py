@@ -4,76 +4,94 @@ import edge_tts
 from moviepy.editor import *
 import tempfile
 import os
+import platform
 
 # ================= 配置区域 =================
-# 这里的字体文件名必须和你上传到 GitHub 的名字完全一致
 DEFAULT_FONT = "font.ttf" 
 
-# 语音角色配置
-VOICE_EN = "en-US-AriaNeural"
+# 微软语音配置 (云端运行时用)
+VOICE_EN = "en-US-ChristopherNeural"
 VOICE_ZH = "zh-CN-XiaoxiaoNeural"
 
 # ================= 页面设置 =================
 st.set_page_config(page_title="单词视频生成器", layout="wide")
-st.title("🎬 每日单词视频生成器 (修复版)")
+st.title("🎬 每日单词视频生成器 (Mac本地 + 云端双模版)")
 
-# ================== 侧边栏：素材配置 ==================
+# ================== 侧边栏 ==================
 st.sidebar.header("⚙️ 素材配置")
-
-# 检查字体是否存在
 if not os.path.exists(DEFAULT_FONT):
-    st.sidebar.error(f"⚠️ 警告：未找到 {DEFAULT_FONT}！请确保字体文件已上传且重命名正确。")
+    st.sidebar.error(f"⚠️ 警告：未找到 {DEFAULT_FONT}！")
     current_font = "Arial" 
 else:
     st.sidebar.success(f"✅ 已加载字体: {DEFAULT_FONT}")
     current_font = DEFAULT_FONT
 
-bg_file = st.sidebar.file_uploader("上传背景图 (9:16竖屏)", type=["jpg", "png", "jpeg"])
-tick_file = st.sidebar.file_uploader("上传倒计时音效 (可选)", type=["mp3", "wav"])
+bg_file = st.sidebar.file_uploader("上传背景图", type=["jpg", "png", "jpeg"])
+tick_file = st.sidebar.file_uploader("上传倒计时音效", type=["mp3", "wav"])
 
-# ================== 主界面：内容输入 ==================
 st.divider()
 col1, col2 = st.columns(2)
-
 with col1:
-    word = st.text_input("单词 (Word)", value="Ambition")
-    ipa = st.text_input("音标 (IPA)", value="/æmˈbɪʃn/")
+    word = st.text_input("单词", value="Ambition")
+    ipa = st.text_input("音标", value="/æmˈbɪʃn/")
     meaning = st.text_input("中文释义", value="n. 野心；雄心；抱负")
-
 with col2:
     sentence = st.text_area("英文例句", value="Her ambition was to become a pilot.")
     translation = st.text_input("例句翻译", value="她的抱负是成为一名飞行员。")
 
-# ================== 核心逻辑函数 ==================
+# ================== 核心语音函数 (关键修改) ==================
 
-async def generate_tts_safe(text, voice, output_file):
-    if not text or len(text.strip()) == 0:
-        return
+def use_mac_tts(text, lang, filename):
+    """
+    使用 Mac 自带的 'say' 命令生成语音，不需要联网
+    """
+    # 英文用 Samantha (Siri声线), 中文用 Ting-Ting
+    voice = "Samantha" if lang == "en" else "Ting-Ting"
+    
+    # Mac 的 say 命令生成的是 aiff 格式，ffmpeg (moviepy) 可以直接读取
+    # 这里的 -o filename 是输出路径
+    cmd = f'say -v {voice} -o "{filename}" "{text}"'
+    print(f"正在使用 Mac 本地语音: {cmd}")
+    os.system(cmd)
+
+async def generate_tts_smart(text, voice, output_file, lang_code="en"):
+    """
+    智能语音生成：优先尝试微软 Edge-TTS，失败则切换 Mac 本地
+    """
+    if not text: return
+
+    # 1. 尝试微软 Edge-TTS (网络好时音质最好)
     try:
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(output_file)
     except Exception as e:
-        print(f"首选语音失败: {e}，尝试备用语音...")
-        try:
-            backup_voice = "en-US-GuyNeural" if "en-US" in voice else "zh-CN-YunxiNeural"
-            communicate = edge_tts.Communicate(text, backup_voice)
-            await communicate.save(output_file)
-        except Exception as e2:
-            raise Exception(f"语音生成失败: {str(e2)}")
+        print(f"微软语音连接失败 ({e})，切换 Mac 本地语音...")
+        
+        # 2. 如果失败，检查是不是在 Mac 上，是的话用本地语音
+        if platform.system() == 'Darwin':
+            # 删除可能存在的空文件
+            if os.path.exists(output_file): os.remove(output_file)
+            # 调用 Mac 系统语音
+            use_mac_tts(text, lang_code, output_file)
+        else:
+            st.error("❌ 语音生成失败：网络不通且非 Mac 系统。请部署到云端使用。")
+            raise e
 
 def process_video(bg_path, font_path, tick_path, data):
     temp_dir = tempfile.mkdtemp()
-    audio_word_path = os.path.join(temp_dir, "word.mp3")
-    audio_full_path = os.path.join(temp_dir, "full.mp3")
+    audio_word_path = os.path.join(temp_dir, "word.aiff") # Mac say 默认格式兼容性更好
+    audio_full_path = os.path.join(temp_dir, "full.aiff")
     output_video_path = os.path.join(temp_dir, "output.mp4")
 
-    # 1. 生成语音
+    # 1. 生成语音 (智能模式)
     try:
-        asyncio.run(generate_tts_safe(data['word'], VOICE_EN, audio_word_path))
+        # 单词 (英文)
+        asyncio.run(generate_tts_smart(data['word'], VOICE_EN, audio_word_path, "en"))
+        
+        # 句子 (中文+英文)
         full_text = f"{data['word']}... {data['meaning']}... {data['sentence']}"
-        asyncio.run(generate_tts_safe(full_text, VOICE_ZH, audio_full_path))
-    except Exception as e:
-        st.error(f"❌ 语音生成失败：{e}")
+        asyncio.run(generate_tts_smart(full_text, VOICE_ZH, audio_full_path, "zh"))
+    except:
         return None
 
     # 2. 载入素材
@@ -82,8 +100,13 @@ def process_video(bg_path, font_path, tick_path, data):
     else:
         bg_clip = ColorClip(size=(1080, 1920), color=(0,0,0))
 
-    audio_word_clip = AudioFileClip(audio_word_path)
-    audio_full_clip = AudioFileClip(audio_full_path)
+    # 读取音频 (MoviePy 会自动处理 aiff/mp3)
+    try:
+        audio_word_clip = AudioFileClip(audio_word_path)
+        audio_full_clip = AudioFileClip(audio_full_path)
+    except OSError:
+        st.error("❌ 音频文件生成失败，可能是 Mac 没有安装中文语音包 (系统偏好设置->辅助功能->朗读内容->系统声音 选婷婷)")
+        return None
     
     tick_sfx = None
     if tick_path:
@@ -131,8 +154,8 @@ def process_video(bg_path, font_path, tick_path, data):
     return output_video_path
 
 # ================== 执行 ==================
-if st.button("🚀 生成视频", type="primary"):
-    with st.spinner("正在合成..."):
+if st.button("🚀 生成视频 (Mac兼容版)", type="primary"):
+    with st.spinner("正在合成... (如联网失败会自动切换Mac语音)"):
         try:
             t_bg = None
             if bg_file:
@@ -153,8 +176,5 @@ if st.button("🚀 生成视频", type="primary"):
             if video_path:
                 st.success("✅ 完成！")
                 st.video(video_path)
-                with open(video_path, "rb") as file:
-                    st.download_button("⬇️ 下载视频", data=file, file_name=f"{word}_video.mp4", mime="video/mp4")
-                
         except Exception as e:
-            st.error(f"出错: {e}")
+            st
