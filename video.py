@@ -6,257 +6,254 @@ import tempfile
 import os
 
 # ================= 配置区域 =================
-# 这里的名字必须和你上传到 GitHub 的字体文件名一致
-# 建议去 GitHub 仓库里把你的字体文件重命名为 font.ttf
 DEFAULT_FONT_NAME = "font.ttf" 
 
-# ================= 页面设置 =================
-st.set_page_config(page_title="单词视频生成器", layout="wide")
-st.title("🎬 每日单词视频生成器 (终极稳定版)")
-st.markdown("""
-**版本特性：**
-1. ✅ 使用 Google 语音 (gTTS)，解决 IP 被封问题。
-2. ✅ 使用 Pillow 原生绘图，解决 ImageMagick 安全策略报错。
-3. ✅ 修复音频时长错误，自动适配倒计时。
-""")
+# APP 风格配色
+COLOR_BG = (245, 247, 250)      # 浅灰背景
+COLOR_CARD = (255, 255, 255)    # 白卡片
+COLOR_TEXT_MAIN = (51, 51, 51)  # 深黑字
+COLOR_TEXT_SUB = (153, 153, 153)# 浅灰字
+COLOR_ACCENT = (46, 204, 113)   # 扇贝绿
+COLOR_COUNTDOWN = (230, 230, 230) # 倒计时超淡大字
 
-# ================== 侧边栏：素材配置 ==================
+st.set_page_config(page_title="仿APP背单词视频生成器", layout="wide")
+st.title("📱 仿APP风格背单词生成器")
+
+# ================== 侧边栏 ==================
 st.sidebar.header("⚙️ 素材配置")
 
-# 1. 字体逻辑：优先用 GitHub 里的，如果没有，允许用户临时上传
+# 字体加载逻辑
 current_font_path = None
-
 if os.path.exists(DEFAULT_FONT_NAME):
     st.sidebar.success(f"✅ 已加载仓库字体: {DEFAULT_FONT_NAME}")
     current_font_path = DEFAULT_FONT_NAME
 else:
-    st.sidebar.warning(f"⚠️ 仓库中未找到 {DEFAULT_FONT_NAME}，请上传字体！")
+    st.sidebar.warning(f"⚠️ 请上传字体文件 (font.ttf)，否则无法生成好看的界面！")
 
-# 允许临时上传字体覆盖
-uploaded_font = st.sidebar.file_uploader("临时替换字体 (可选)", type=["ttf", "ttc"])
+uploaded_font = st.sidebar.file_uploader("替换字体 (推荐圆体/黑体)", type=["ttf", "ttc"])
 if uploaded_font:
-    # 保存临时字体
     with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp_font:
         tmp_font.write(uploaded_font.read())
         current_font_path = tmp_font.name
-        st.sidebar.success("✅ 已使用临时上传的字体")
 
-# 2. 其他素材
-bg_file = st.sidebar.file_uploader("上传背景图 (9:16竖屏)", type=["jpg", "png", "jpeg"])
+# 倒计时音效 (可选)
 tick_file = st.sidebar.file_uploader("上传倒计时音效 (可选)", type=["mp3", "wav"])
 
 st.divider()
 
-# ================== 主界面：内容输入 ==================
+# ================== 内容输入 ==================
 col1, col2 = st.columns(2)
 with col1:
-    word = st.text_input("单词", value="Ambition")
-    ipa = st.text_input("音标", value="/æmˈbɪʃn/")
-    meaning = st.text_input("中文释义", value="n. 野心；雄心；抱负")
+    word = st.text_input("单词", value="ambiguous")
+    ipa = st.text_input("音标", value="/æmˈbɪɡjuəs/")
+    meaning = st.text_input("中文释义", value="adj. 模棱两可的；含糊不清的")
 with col2:
-    sentence = st.text_area("英文例句", value="Her ambition was to become a pilot.")
-    translation = st.text_input("例句翻译", value="她的抱负是成为一名飞行员。")
+    sentence = st.text_area("英文例句", value="His role has always been ambiguous.")
+    translation = st.text_input("例句翻译", value="他的角色一直模棱两可。")
 
-# ================== 核心功能函数 ==================
+# ================== 核心绘图函数 (Pillow) ==================
 
-def generate_google_tts(text, lang, output_file):
-    """生成谷歌语音"""
-    if not text: return
-    try:
-        # lang: 'en' for English, 'zh-CN' for Chinese
-        tts = gTTS(text=text, lang=lang)
-        tts.save(output_file)
-    except Exception as e:
-        raise Exception(f"Google语音生成失败: {e}")
-
-def create_text_clip_pil(text, font_path, font_size, color, duration, width=1080, height=1920, position="center", y_offset=0):
+def draw_app_interface(data, font_path, mode="countdown", countdown_num=3):
     """
-    使用 Pillow 绘制文字图片，转为 MoviePy ImageClip
-    彻底绕过 ImageMagick
+    绘制每一帧的图片
+    mode: "countdown" (倒计时阶段) / "result" (结果揭示阶段)
     """
-    # 1. 创建透明画布
-    img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
+    W, H = 1080, 1920
+    img = Image.new('RGB', (W, H), COLOR_BG)
     draw = ImageDraw.Draw(img)
     
-    # 2. 加载字体
+    # 1. 绘制顶部 APP 模拟栏 (装饰用)
+    draw.rectangle([(0, 0), (W, 150)], fill=COLOR_ACCENT) # 顶部绿条
+    
+    # 加载字体
     try:
-        font = ImageFont.truetype(font_path, font_size)
+        font_huge = ImageFont.truetype(font_path, 130) # 单词
+        font_big = ImageFont.truetype(font_path, 80)   # 倒计时大字
+        font_mid = ImageFont.truetype(font_path, 60)   # 音标/释义
+        font_small = ImageFont.truetype(font_path, 50) # 例句
+        font_giant = ImageFont.truetype(font_path, 600) # 背景大数字
     except:
-        font = ImageFont.load_default()
-        print("字体加载失败，使用默认字体")
+        font_huge = ImageFont.load_default()
+        # ... 降级处理略
+    
+    # 2. 绘制白色卡片区域 (中间)
+    card_margin = 60
+    card_top = 250
+    card_bottom = 1400
+    draw.rectangle([(card_margin, card_top), (W-card_margin, card_bottom)], fill=COLOR_CARD, outline=None)
+    
+    # ---------------- 核心内容绘制 ----------------
+    
+    # A. 单词 (始终显示)
+    # 居中计算
+    w_bbox = draw.textbbox((0, 0), data['word'], font=font_huge)
+    w_width = w_bbox[2] - w_bbox[0]
+    draw.text(((W - w_width)/2, card_top + 150), data['word'], font=font_huge, fill=COLOR_TEXT_MAIN)
+    
+    # B. 音标 (始终显示)
+    i_bbox = draw.textbbox((0, 0), data['ipa'], font=font_mid)
+    i_width = i_bbox[2] - i_bbox[0]
+    draw.text(((W - i_width)/2, card_top + 320), data['ipa'], font=font_mid, fill=COLOR_TEXT_SUB)
 
-    # 3. 计算文字大小和位置
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    
-    # 默认居中
-    x = (width - text_w) / 2
-    y = (height - text_h) / 2
-    
-    # 如果指定了 y_offset (垂直偏移)，则调整 y
-    # y_offset 比如 200 代表靠上，1300 代表靠下
-    if y_offset != 0:
-        y = y_offset
+    # C. 模式分支
+    if mode == "countdown":
+        # === 倒计时模式 ===
+        # 1. 背景大数字 (03, 02, 01)
+        num_str = f"0{countdown_num}"
+        n_bbox = draw.textbbox((0, 0), num_str, font=font_giant)
+        n_w = n_bbox[2] - n_bbox[0]
+        n_h = n_bbox[3] - n_bbox[1]
+        # 画在卡片中心偏下，颜色很淡
+        draw.text(((W - n_w)/2, card_top + 500), num_str, font=font_giant, fill=COLOR_COUNTDOWN)
+        
+        # 2. 底部提示语
+        tip_text = "三秒之后看答案"
+        t_bbox = draw.textbbox((0, 0), tip_text, font=font_mid)
+        draw.text(((W - (t_bbox[2]-t_bbox[0]))/2, card_bottom - 200), tip_text, font=font_mid, fill=COLOR_ACCENT)
 
-    # 4. 颜色映射
-    color_map = {
-        'white': (255, 255, 255),
-        'yellow': (255, 215, 0),
-        'lightgrey': (211, 211, 211),
-        'black': (0, 0, 0)
-    }
-    rgb = color_map.get(color, (255, 255, 255))
-    
-    # 5. 绘制
-    draw.text((x, y), text, font=font, fill=rgb)
-    
-    # 6. 保存临时文件并生成 Clip
-    temp_img_path = tempfile.mktemp(suffix=".png")
-    img.save(temp_img_path)
-    
-    # 创建 Clip
-    clip = ImageClip(temp_img_path).set_duration(duration)
-    return clip
+    elif mode == "result":
+        # === 结果模式 ===
+        content_start_y = card_top + 500
+        
+        # 1. 中文释义 (加粗/显眼)
+        # 简单处理换行
+        meaning_text = data['meaning']
+        draw.text((card_margin + 80, content_start_y), meaning_text, font=font_mid, fill=COLOR_TEXT_MAIN)
+        
+        # 2. 分割线
+        line_y = content_start_y + 120
+        draw.line([(card_margin + 50, line_y), (W - card_margin - 50, line_y)], fill=(240,240,240), width=3)
+        
+        # 3. 例句
+        ex_y = line_y + 80
+        draw.text((card_margin + 80, ex_y), "例句:", font=font_small, fill=COLOR_ACCENT)
+        
+        # 简单的自动换行逻辑 (每行大概25个字，这里粗略估算)
+        chars_per_line = 30
+        sentence = data['sentence']
+        lines = [sentence[i:i+chars_per_line] for i in range(0, len(sentence), chars_per_line)]
+        
+        current_y = ex_y + 80
+        for line in lines:
+            draw.text((card_margin + 80, current_y), line, font=font_small, fill=COLOR_TEXT_MAIN)
+            current_y += 70
+            
+        # 4. 翻译
+        current_y += 30
+        draw.text((card_margin + 80, current_y), data['translation'], font=font_small, fill=COLOR_TEXT_SUB)
 
-def process_video(bg_path, font_path, tick_path, data):
+    # 3. 底部按钮 (模拟)
+    btn_y = 1550
+    btn_h = 180
+    btn_w = 500
+    # 左按钮 (提示一下)
+    draw.rounded_rectangle([(100, btn_y), (100+400, btn_y+btn_h)], radius=30, fill=(255,235,238))
+    draw.text((100+120, btn_y+60), "提示一下", font=font_mid, fill=(255,100,100))
+    
+    # 右按钮 (我认识) - 绿色实心
+    draw.rounded_rectangle([(W-100-400, btn_y), (W-100, btn_y+btn_h)], radius=30, fill=COLOR_ACCENT)
+    draw.text((W-100-280, btn_y+60), "我认识", font=font_mid, fill='white')
+
+    # 保存为临时文件
+    temp_path = tempfile.mktemp(suffix=".png")
+    img.save(temp_path)
+    return temp_path
+
+# ================== 核心处理逻辑 ==================
+
+def generate_tts(text, lang, filename):
+    try:
+        tts = gTTS(text=text, lang=lang)
+        tts.save(filename)
+    except Exception as e:
+        raise Exception(f"语音生成失败: {e}")
+
+def process_video(font_path, tick_path, data):
     temp_dir = tempfile.mkdtemp()
-    audio_word_path = os.path.join(temp_dir, "word.mp3")
-    audio_full_path = os.path.join(temp_dir, "full.mp3")
-    output_video_path = os.path.join(temp_dir, "output.mp4")
+    audio_word = os.path.join(temp_dir, "word.mp3")
+    audio_sentence = os.path.join(temp_dir, "sentence.mp3")
+    output_path = os.path.join(temp_dir, "output.mp4")
 
-    # --- 1. 生成语音 (gTTS) ---
+    # 1. 生成语音
     try:
-        # 单词 (英文)
-        generate_google_tts(data['word'], 'en', audio_word_path)
-        # 全文 (用中文引擎读混合文本)
-        full_text = f"{data['word']}，{data['meaning']}，{data['sentence']}"
-        generate_google_tts(full_text, 'zh-CN', audio_full_path)
+        generate_tts(data['word'], 'en', audio_word)
+        # 结果页语音：读单词 + 读例句
+        full_text = f"{data['sentence']}"
+        generate_tts(full_text, 'en', audio_sentence)
     except Exception as e:
-        st.error(f"❌ 语音生成失败: {e}")
+        st.error(str(e))
         return None
 
-    # --- 2. 处理背景图 ---
-    if bg_path:
-        try:
-            # 用 Pillow 调整大小，避免调用 ImageMagick
-            pil_bg = Image.open(bg_path).resize((1080, 1920))
-            bg_temp = os.path.join(temp_dir, "bg_resized.jpg")
-            pil_bg.save(bg_temp)
-            bg_clip = ImageClip(bg_temp)
-        except Exception as e:
-            st.warning(f"背景图处理出错: {e}，将使用黑底。")
-            bg_clip = ColorClip(size=(1080, 1920), color=(0,0,0))
-    else:
-        bg_clip = ColorClip(size=(1080, 1920), color=(0,0,0))
-
-    # --- 3. 读取音频 ---
-    try:
-        audio_word_clip = AudioFileClip(audio_word_path)
-        audio_full_clip = AudioFileClip(audio_full_path)
-    except Exception as e:
-        st.error(f"❌ 音频读取失败: {e}")
-        return None
+    # 加载单词音频
+    clip_word_audio = AudioFileClip(audio_word)
     
-    tick_sfx = None
+    # 加载倒计时音效
+    clip_tick_audio = None
     if tick_path:
-        try:
-            tick_sfx = AudioFileClip(tick_path).subclip(0, 3).volumex(0.3)
-        except:
-            pass
+        clip_tick_audio = AudioFileClip(tick_path).subclip(0, 1) # 截取1秒
 
-    # ================= 制作阶段 1 (提问) =================
-    # 时长逻辑：至少3.5秒，如果单词读得慢，就延长
-    phase1_duration = max(3.5, audio_word_clip.duration + 2.5)
+    # === 制作第一部分：3秒倒计时 (3, 2, 1) ===
+    countdown_clips = []
     
-    # 绘制巨大的单词 (居中)
-    txt_word_huge = create_text_clip_pil(
-        data['word'], font_path, 150, 'white', phase1_duration
-    )
+    for i in [3, 2, 1]:
+        # A. 生成这一秒的画面 (显示数字 i)
+        img_path = draw_app_interface(data, font_path, mode="countdown", countdown_num=i)
+        clip_img = ImageClip(img_path).set_duration(1.0) # 每一张图显示1秒
+        
+        # B. 这一秒的音频：单词发音 + 滴答声 (混合)
+        # 确保音频不超过1秒
+        current_audio = clip_word_audio
+        if clip_tick_audio:
+            current_audio = CompositeAudioClip([clip_word_audio, clip_tick_audio])
+            
+        # 强制音频限时1秒 (防止单词太长导致画面不同步)
+        if current_audio.duration > 1:
+            current_audio = current_audio.subclip(0, 1)
+            
+        clip_img = clip_img.set_audio(current_audio)
+        countdown_clips.append(clip_img)
     
-    # 组合音频：单词声 + 倒计时
-    if tick_sfx:
-        # set_start(0.5) 让倒计时稍微晚一点进
-        audio_track_1 = CompositeAudioClip([audio_word_clip, tick_sfx.set_start(0.5)])
-    else:
-        audio_track_1 = audio_word_clip
-    
-    # 合成阶段1
-    # 注意：这里我们只给 bg_clip 设置时长，不强制拉伸 audio
-    clip_phase_1 = CompositeVideoClip([bg_clip.set_duration(phase1_duration), txt_word_huge])
-    clip_phase_1 = clip_phase_1.set_audio(audio_track_1)
+    # 合并倒计时片段 (3秒)
+    intro_clip = concatenate_videoclips(countdown_clips)
 
-    # ================= 制作阶段 2 (揭示) =================
-    phase2_duration = audio_full_clip.duration + 1.0
+    # === 制作第二部分：结果展示 ===
+    # 结果页画面
+    res_img_path = draw_app_interface(data, font_path, mode="result")
     
-    # 绘制上方单词+音标 (y_offset=200)
-    txt_word_top = create_text_clip_pil(
-        data['word'] + "\n" + data['ipa'], font_path, 100, 'yellow', phase2_duration, y_offset=200
-    )
+    # 结果页音频 (例句)
+    clip_sentence_audio = AudioFileClip(audio_sentence)
     
-    # 绘制中间释义 (居中)
-    txt_meaning = create_text_clip_pil(
-        data['meaning'], font_path, 70, 'white', phase2_duration
-    )
-    
-    # 绘制下方例句 (y_offset=1300)
-    ex_text = f"{data['sentence']}\n{data['translation']}"
-    txt_example = create_text_clip_pil(
-        ex_text, font_path, 50, 'lightgrey', phase2_duration, y_offset=1300
-    )
+    # 画面时长 = 音频时长 + 1秒缓冲
+    duration = clip_sentence_audio.duration + 1.5
+    result_clip = ImageClip(res_img_path).set_duration(duration)
+    result_clip = result_clip.set_audio(clip_sentence_audio)
 
-    clip_phase_2 = CompositeVideoClip([
-        bg_clip.set_duration(phase2_duration),
-        txt_word_top,
-        txt_meaning,
-        txt_example
-    ])
-    clip_phase_2 = clip_phase_2.set_audio(audio_full_clip)
-
-    # ================= 最终合并 =================
-    final_video = concatenate_videoclips([clip_phase_1, clip_phase_2])
-    final_video.write_videofile(output_video_path, fps=24, codec='libx264', audio_codec='aac')
+    # === 最终合并 ===
+    final_video = concatenate_videoclips([intro_clip, result_clip])
+    final_video.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac')
     
-    return output_video_path
+    return output_path
 
 # ================== 执行按钮 ==================
-if st.button("🚀 生成视频 (最终版)", type="primary"):
+if st.button("🚀 生成仿APP视频", type="primary"):
     if not current_font_path:
-        st.error("❌ 无法生成：缺少字体！请在侧边栏上传字体，或确保 GitHub 仓库里有 font.ttf")
+        st.error("❌ 必须上传字体文件才能生成界面！")
     else:
-        with st.spinner("正在合成视频... (约15-20秒)"):
+        with st.spinner("正在绘制APP界面..."):
             try:
-                # 处理上传的临时文件
-                t_bg = None
-                if bg_file:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-                        f.write(bg_file.read())
-                        t_bg = f.name
-                
+                # 处理音效
                 t_tick = None
                 if tick_file:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
                         f.write(tick_file.read())
                         t_tick = f.name
-
-                data = {
-                    "word": word, "ipa": ipa, "meaning": meaning, 
-                    "sentence": sentence, "translation": translation
-                }
                 
-                video_path = process_video(t_bg, current_font_path, t_tick, data)
+                data = {"word": word, "ipa": ipa, "meaning": meaning, "sentence": sentence, "translation": translation}
+                
+                video_path = process_video(current_font_path, t_tick, data)
                 
                 if video_path:
-                    st.balloons()
-                    st.success("✅ 视频制作成功！")
+                    st.success("✅ 视频已生成！")
                     st.video(video_path)
-                    
-                    with open(video_path, "rb") as file:
-                        st.download_button(
-                            label="⬇️ 下载视频",
-                            data=file,
-                            file_name=f"{word}_vocab.mp4",
-                            mime="video/mp4"
-                        )
             except Exception as e:
-                st.error(f"发生未知错误: {e}")
+                st.error(f"出错: {e}")
